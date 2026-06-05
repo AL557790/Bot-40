@@ -9,7 +9,7 @@ from flask import Flask, request
 TELEGRAM_BOT_TOKEN = "8820755267:AAHMUktr3XDN_0RjFDM79NExy7ORssx-MdI"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# 2️⃣ ضع رابط السيرفر الخاص بك على Render هنا (ليقوم الكود بربط الـ Webhook تلقائياً)
+# 2️⃣ ضع رابط السيرفر الخاص بك على Render هنا ليتم ربطه تلقائياً
 RENDER_WEB_URL = "https://bot-40-sm1k.onrender.com"
 
 app = Flask(__name__)
@@ -32,146 +32,139 @@ BASE_HEADERS = {
 }
 
 def create_fresh_session():
+    """دالة لإنشاء جلسة جديدة وجلب كوكيز حية ومباشرة من الموقع تلقائياً"""
     session = requests.Session()
     session.headers.update(BASE_HEADERS)
     try:
         session.get(BASE_URL, timeout=15)
     except Exception as e:
-        print(f"⚠️ session error: {e}")
+        print(f"⚠️ تحذير أثناء إنشاء الجلسة التلقائية: {e}")
     return session
 
-
 def send_request_to_api(payload_data):
+    """دالة ترسل الطلب باستخدام جلسة برمجية جديدة بالكامل في كل مرة"""
     try:
         session = create_fresh_session()
         response = session.post(API_URL, json=payload_data, timeout=45)
-
+        
         if response.status_code == 200:
-            data = response.json()
-            base64_data = data.get("imageBase64")
-            if base64_data:
-                return {"success": True, "data": base64_data}
-            else:
-                return {"success": False, "error": "No image returned", "text": str(data)}
+            try:
+                data = response.json()
+                base64_data = data.get("imageBase64")
+                if base64_data:
+                    return {"success": True, "data": base64_data}
+                else:
+                    return {"success": False, "error": "السيرفر لم يرسل الصورة. الرد المستلم:", "text": str(data)}
+            except Exception:
+                return {"success": False, "error": "رد السيرفر ليس بصيغة JSON. الرد النصي:", "text": response.text[:200]}
         else:
-            return {"success": False, "error": f"HTTP {response.status_code}", "text": response.text[:200]}
+            clean_text = response.text[:150] + "..." if len(response.text) > 150 else response.text
+            return {"success": False, "error": f"كود الحالة: {response.status_code}", "text": clean_text}
     except Exception as e:
-        return {"success": False, "error": "Request error", "text": str(e)[:100]}
+        return {"success": False, "error": "خطأ في الاتصال بالشبكة:", "text": str(e)[:100]}
 
 
 # 1️⃣ توليد صورة من نص
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري إنشاء جلسة وتوليد الصورة...")
-
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري إنشاء جلسة تلقائية وتوليد الصورة...")
+    
     payload = {
         "prompt": message.text,
-        "imageBase64": "",
+        "imageBase64": "", 
         "format": "nanobanana2",
         "language": "en"
     }
-
+    
     result = send_request_to_api(payload)
-
+    
     if result["success"] and result["data"]:
         base64_data = result["data"]
         if "," in base64_data:
             base64_data = base64_data.split(",")[1]
-
+            
         image_bytes = base64.b64decode(base64_data)
-
-        try:
-            bot.delete_message(message.chat.id, status_msg.message_id)
-        except:
-            pass
-
+        del base64_data, result, payload
+        
+        try: bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
+        except: pass
+            
         image_file = io.BytesIO(image_bytes)
         image_file.name = "result.jpg"
-        bot.send_photo(message.chat.id, image_file, caption="🎨 تم التوليد بنجاح")
+        bot.send_photo(message.chat.id, image_file, caption="🎨 تم توليد الصورة بنجاح عبر جلسة جديدة!")
     else:
-        bot.edit_message_text(
-            f"❌ {result.get('error','Error')}\n{result.get('text','')}",
-            message.chat.id,
-            status_msg.message_id
-        )
+        error_title = result.get('error', 'خطأ غير معروف')
+        error_details = result.get('text', '')
+        del result, payload
+        bot.edit_message_text(f"❌ {error_title}\n`{error_details}`", chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
 
 
-# 2️⃣ تعديل صورة مرسلة (معالجة حجم الصورة وصيغة الميتا داتا)
+# 2️⃣ تعديل صورة مرسلة (معدلة لتتوافق مع بيئة استضافة Render)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري تحميل ومعالجة الصورة... قد يستغرق ذلك دقيقة.")
-
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري تهيئة ومعالجة أبعاد الصورة...")
+    
     try:
-        # تحميل الصورة من سيرفرات تيليجرام
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-
-        img = Image.open(io.BytesIO(downloaded_file))
         
-        # تقليص الحجم لـ 800px لمنع حدوث تجميد أو Timeout على Render
-        max_size = 800
+        img = Image.open(io.BytesIO(downloaded_file))
+        max_size = 800  # تقليص طفيف للأبعاد لضمان معالجة سريعة على السيرفر بدون Timeout
         if img.width > max_size or img.height > max_size:
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
+            
         if img.mode != 'RGB':
             img = img.convert('RGB')
-
-        # ضغط جودة الصورة قليلاً لتسريع الرفع
+            
         output_buffer = io.BytesIO()
-        img.save(output_buffer, format='JPEG', quality=80)
+        img.save(output_buffer, format='JPEG', quality=85)
         jpg_bytes = output_buffer.getvalue()
-
-        # تشفير الصورة وإضافة الـ Data URI اللازم للـ API
+        
         encoded_image = base64.b64encode(jpg_bytes).decode('utf-8')
         caption = message.caption if message.caption else "enhance image"
-
+        
+        # 🔥 هنا التعديل: إرسال صيغة Data URI السليمة ليفهمها السيرفر عند الطلب من Render
         payload = {
             "prompt": caption,
             "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
             "format": "nanobanana2",
             "language": "en"
         }
-
-        print("📡 Sending image to API...")
+        
+        del downloaded_file, jpg_bytes, output_buffer
+        bot.edit_message_text("⏳ جاري إنشاء الجلسة ورفع بيانات الصورة للسيرفر...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        
         result = send_request_to_api(payload)
-        print(f"📥 API Response Success: {result['success']}")
-
+        del payload, encoded_image
+        
         if result["success"] and result["data"]:
             base64_data = result["data"]
             if "," in base64_data:
                 base64_data = base64_data.split(",")[1]
-
+            
             image_bytes = base64.b64decode(base64_data)
-
-            try:
-                bot.delete_message(message.chat.id, status_msg.message_id)
-            except:
-                pass
-
+            del base64_data, result
+            
+            try: bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
+            except: pass
+                
             image_file = io.BytesIO(image_bytes)
             image_file.name = "result.jpg"
-            bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل بنجاح")
+            bot.send_photo(message.chat.id, image_file, caption="🎨 تم معالجة وتعديل صورتك بنجاح!")
         else:
-            bot.edit_message_text(
-                f"❌ فشل السيرفر في معالجة الصورة:\n{result.get('error','Error')}\nالتفاصيل: {result.get('text','')[:100]}",
-                message.chat.id,
-                status_msg.message_id
-            )
-
+            error_title = result.get('error', 'خطأ غير معروف')
+            error_details = result.get('text', '')
+            del result
+            bot.edit_message_text(f"❌ {error_title}\n`{error_details}`", chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
+            
     except Exception as e:
-        print(f"🔴 Critical Error in handle_photo: {str(e)}")
-        bot.edit_message_text(
-            f"❌ خطأ داخلي أثناء المعالجة: {str(e)[:100]}",
-            message.chat.id,
-            status_msg.message_id
-        )
+        bot.edit_message_text(f"❌ خطأ داخلي في البوت: {str(e)[:100]}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 
-# 🔴 مسارات الـ Flask المطلوبة للـ Webhook والتشغيل على Render
+# 🔴 مسارات Flask الضرورية للـ Webhook والـ live check على Render
 @app.route("/")
 def home():
     return "Bot is running perfectly!"
-
 
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
@@ -179,13 +172,11 @@ def webhook():
     bot.process_new_updates([update])
     return "OK"
 
-
-# 🔥 التفعيل الذكي: ضبط الـ Webhook ذاتياً فور تشغيل السيرفر
+# 🔥 الإعداد الذاتي لإزالة الـ Polling القديم وربط الـ Webhook تلقائياً عند التشغيل على السيرفر
 if __name__ == "__main__":
-    print("🔄 Removing old webhook/polling configuration...")
+    print("🔄 Removing old configuration...")
     bot.remove_webhook()
     
-    # ربط البوت برابط سيرفر Render تلقائياً
     webhook_url = f"{RENDER_WEB_URL}/{TELEGRAM_BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
-    print(f"🚀 Webhook successfully configured to: {webhook_url}")
+    print(f"🚀 Webhook configured successfully: {webhook_url}")
