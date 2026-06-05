@@ -42,6 +42,8 @@ def send_request_to_api(payload_data):
             base64_data = data.get("imageBase64")
             if base64_data:
                 return {"success": True, "data": base64_data}
+            # طباعة الرد الكامل في الترمنيل لمعرفة شكل المخرجات الجديد
+            print(f"⚠️ [API WARN] Full response object: {data}", flush=True)
             return {"success": False, "error": "No image field", "text": str(data)}
         return {"success": False, "error": f"HTTP {response.status_code}", "text": response.text[:200]}
     except Exception as e:
@@ -77,37 +79,32 @@ def handle_text(message):
     
     del payload, result
 
-# 2️⃣ تعديل صورة مرسلة (نسخة محسنة ومخففة لمنع خطأ HTTP 400)
+# 2️⃣ تعديل صورة مرسلة (نسخة ذكية لتفادي حقل المخرجات الفارغ)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print(f"📸 [POLLING - PHOTO] Received photo from user {message.chat.id}", flush=True)
     status_msg = bot.send_message(message.chat.id, "⏳ جاري تقليص حجم الصورة وتجهيزها...")
 
     try:
-        # جلب بيانات الملف وتحميله
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # فتح الصورة والتحكم بأبعادها لتناسب الرام المحدود في Render
         img = Image.open(io.BytesIO(downloaded_file))
-        
-        # تقليص الأبعاد إلى 512 لضمان خفة الحجم وتفادي الـ Bad Request
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
         if img.mode != 'RGB': 
             img = img.convert('RGB')
 
         output_buffer = io.BytesIO()
-        # ضغط الصورة بجودة متوازنة لتقليص حجم الـ Base64
-        img.save(output_buffer, format='JPEG', quality=75)
+        img.save(output_buffer, format='JPEG', quality=80)
 
-        # تحويل الصورة إلى Base64 خام (بدون داتا بريفيكس)
         encoded_image = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        caption = message.caption if message.caption else "enhance image"
+        
+        # 💡 خدعة: إذا أرسل المستخدم صورة بدون كابشن، نضع وصفاً افتراضياً إنجليزياً ممتازاً يجبر الذكاء الاصطناعي على المعالجة
+        caption = message.caption if message.caption else "enhance image, high quality, highly detailed"
 
-        # تحضير البيانات بترميز الـ Base64 الخام أولاً
         payload = {
             "prompt": caption,
-            "imageBase64": encoded_image,
+            "imageBase64": f"data:image/jpeg;base64,{encoded_image}", # الاعتماد على الصيغة القياسية الكاملة
             "format": "nanobanana2",
             "language": "en"
         }
@@ -115,20 +112,9 @@ def handle_photo(message):
         try: bot.edit_message_text("⏳ جاري رفع بيانات الصورة ومعالجتها بالسيرفر الخارجي...", message.chat.id, status_msg.message_id)
         except: pass
 
-        # إرسال الطلب الأول
         result = send_request_to_api(payload)
         
-        # تنظيف فوري للذاكرة الكبيرة لمنع استهلاك رام Render
-        del downloaded_file, output_buffer, img
-        
-        # خدعة ذكية: إذا أرجع السيرفر خطأ 400، نجرب الصيغة البديلة (مع إضافة الميتا داتا) تلقائياً
-        if not result["success"] and "400" in str(result.get("error")):
-            print("🔄 [RETRY] API returned 400. Retrying with Data URI prefix...", flush=True)
-            payload["imageBase64"] = f"data:image/jpeg;base64,{encoded_image}"
-            result = send_request_to_api(payload)
-
-        # تنظيف نص الـ Base64 والـ payload بعد الانتهاء
-        del encoded_image, payload
+        del downloaded_file, output_buffer, img, encoded_image, payload
         
         if result["success"]:
             base64_data = result["data"].split(",")[1] if "," in result["data"] else result["data"]
@@ -142,7 +128,7 @@ def handle_photo(message):
             bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل والمعالجة بنجاح!")
             del base64_data, image_bytes, image_file
         else:
-            bot.edit_message_text(f"❌ فشل السيرفر الخارجي بالرد:\n`{result.get('error')}`\nتأكد من كتابة وصف مناسب مع الصورة.", message.chat.id, status_msg.message_id)
+            bot.edit_message_text(f"❌ فشل السيرفر الخارجي بالرد:\n`{result.get('error')}`\nيرجى محاولة كتابة وصف مختلف باللغة الإنجليزية مع الصورة.", message.chat.id, status_msg.message_id)
             
     except Exception as e:
         print(f"🔴 [PHOTO ERROR] {str(e)}", flush=True)
@@ -150,13 +136,11 @@ def handle_photo(message):
         except: pass
 
 
-# مسار الويب الأساسي الذي يفحصه موقع Render لإبقاء الخدمة حية
 @app.route("/")
 def home():
     return "Bot is running via Hybrid Polling mode!"
 
 
-# دالة لتشغيل البوت بنظام Polling مستمر داخل خيط معالجة (Thread) مستقل
 def run_bot_polling():
     while True:
         try:
@@ -168,7 +152,6 @@ def run_bot_polling():
             time.sleep(5)
 
 
-# تشغيل خيط المعالجة المستقل فوراً عند بدء التطبيق ليعمل بالتوازي مع Flask
 polling_thread = threading.Thread(target=run_bot_polling)
 polling_thread.daemon = True
 polling_thread.start()
