@@ -5,11 +5,10 @@ import telebot
 from PIL import Image
 from flask import Flask, request
 
-# 1. ضع توكن البوت الحقيقي الخاص بك هنا
+# 1. ضع توكن البوت الحقيقي الخاص بك هنا (تنبيه: يفضل دائماً عدم نشر التوكن علناً لحماية بوتك)
 TELEGRAM_BOT_TOKEN = "8820755267:AAHMUktr3XDN_0RjFDM79NExy7ORssx-MdI"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# 🔴 FIX: إضافة Flask app (هذا هو الخطأ اللي كان يطيّح Render)
 app = Flask(__name__)
 
 API_URL = "https://imageprompt.online/api/generate"
@@ -119,9 +118,10 @@ def handle_photo(message):
         encoded_image = base64.b64encode(jpg_bytes).decode('utf-8')
         caption = message.caption if message.caption else "enhance image"
 
+        # 🔥 التعديل هنا: إضافة الهيدر الخاص بـ Base64 لتتعرف الـ API على الصورة بشكل صحيح
         payload = {
             "prompt": caption,
-            "imageBase64": encoded_image,
+            "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
             "format": "nanobanana2",
             "language": "en"
         }
@@ -158,7 +158,7 @@ def handle_photo(message):
         )
 
 
-# 🔴 FIX: Flask routes (ضروري لـ gunicorn)
+# 🔴 Flask routes (ضروري لـ gunicorn على Render)
 @app.route("/")
 def home():
     return "Bot is running"
@@ -172,5 +172,7 @@ def webhook():
 
 
 if __name__ == "__main__":
+    # تنبيه: بما أنك تستخدم Webhook على Render، يفضل عدم تشغيل infinity_polling() محلياً
+    # إلا إذا كنت تختبر البوت بدون Webhook.
     print("🚀 bot running...")
     bot.infinity_polling()
