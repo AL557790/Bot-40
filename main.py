@@ -5,9 +5,12 @@ import telebot
 from PIL import Image
 from flask import Flask, request
 
-# 1. ضع توكن البوت الحقيقي الخاص بك هنا (تنبيه: يفضل دائماً عدم نشر التوكن علناً لحماية بوتك)
+# 1️⃣ ضع توكن البوت الحقيقي الخاص بك هنا
 TELEGRAM_BOT_TOKEN = "8820755267:AAHMUktr3XDN_0RjFDM79NExy7ORssx-MdI"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+# 2️⃣ ضع رابط السيرفر الخاص بك على Render هنا (ليقوم الكود بربط الـ Webhook تلقائياً)
+RENDER_WEB_URL = "https://bot-40-sm1k.onrender.com"
 
 app = Flask(__name__)
 
@@ -93,32 +96,35 @@ def handle_text(message):
         )
 
 
-# 2️⃣ تعديل صورة مرسلة
+# 2️⃣ تعديل صورة مرسلة (معالجة حجم الصورة وصيغة الميتا داتا)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري معالجة الصورة...")
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري تحميل ومعالجة الصورة... قد يستغرق ذلك دقيقة.")
 
     try:
+        # تحميل الصورة من سيرفرات تيليجرام
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
         img = Image.open(io.BytesIO(downloaded_file))
-        max_size = 1024
-
+        
+        # تقليص الحجم لـ 800px لمنع حدوث تجميد أو Timeout على Render
+        max_size = 800
         if img.width > max_size or img.height > max_size:
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
         if img.mode != 'RGB':
             img = img.convert('RGB')
 
+        # ضغط جودة الصورة قليلاً لتسريع الرفع
         output_buffer = io.BytesIO()
-        img.save(output_buffer, format='JPEG', quality=90)
+        img.save(output_buffer, format='JPEG', quality=80)
         jpg_bytes = output_buffer.getvalue()
 
+        # تشفير الصورة وإضافة الـ Data URI اللازم للـ API
         encoded_image = base64.b64encode(jpg_bytes).decode('utf-8')
         caption = message.caption if message.caption else "enhance image"
 
-        # 🔥 التعديل هنا: إضافة الهيدر الخاص بـ Base64 لتتعرف الـ API على الصورة بشكل صحيح
         payload = {
             "prompt": caption,
             "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
@@ -126,7 +132,9 @@ def handle_photo(message):
             "language": "en"
         }
 
+        print("📡 Sending image to API...")
         result = send_request_to_api(payload)
+        print(f"📥 API Response Success: {result['success']}")
 
         if result["success"] and result["data"]:
             base64_data = result["data"]
@@ -145,23 +153,24 @@ def handle_photo(message):
             bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل بنجاح")
         else:
             bot.edit_message_text(
-                f"❌ {result.get('error','Error')}\n{result.get('text','')}",
+                f"❌ فشل السيرفر في معالجة الصورة:\n{result.get('error','Error')}\nالتفاصيل: {result.get('text','')[:100]}",
                 message.chat.id,
                 status_msg.message_id
             )
 
     except Exception as e:
+        print(f"🔴 Critical Error in handle_photo: {str(e)}")
         bot.edit_message_text(
-            f"❌ خطأ داخلي: {str(e)[:100]}",
+            f"❌ خطأ داخلي أثناء المعالجة: {str(e)[:100]}",
             message.chat.id,
             status_msg.message_id
         )
 
 
-# 🔴 Flask routes (ضروري لـ gunicorn على Render)
+# 🔴 مسارات الـ Flask المطلوبة للـ Webhook والتشغيل على Render
 @app.route("/")
 def home():
-    return "Bot is running"
+    return "Bot is running perfectly!"
 
 
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
@@ -171,8 +180,12 @@ def webhook():
     return "OK"
 
 
+# 🔥 التفعيل الذكي: ضبط الـ Webhook ذاتياً فور تشغيل السيرفر
 if __name__ == "__main__":
-    # تنبيه: بما أنك تستخدم Webhook على Render، يفضل عدم تشغيل infinity_polling() محلياً
-    # إلا إذا كنت تختبر البوت بدون Webhook.
-    print("🚀 bot running...")
-    bot.infinity_polling()
+    print("🔄 Removing old webhook/polling configuration...")
+    bot.remove_webhook()
+    
+    # ربط البوت برابط سيرفر Render تلقائياً
+    webhook_url = f"{RENDER_WEB_URL}/{TELEGRAM_BOT_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    print(f"🚀 Webhook successfully configured to: {webhook_url}")
