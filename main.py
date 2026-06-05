@@ -119,12 +119,12 @@ def handle_photo(message):
     except Exception as e:
         bot.edit_message_text(f"❌ خطأ داخلي:\n`{str(e)[:100]}`", message.chat.id, status_msg.message_id)
 
-# المسارات الأساسية للـ Webhook
+
 @app.route("/")
 def home():
     return "Bot status: ONLINE"
 
-# مسار استقبال تحديثات تيليجرام مع طباعة لوغ صريح عند دخول أي رسالة
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     print("📥 [WEBHOOK ENTRY] Telegram just pinged the server!")
@@ -137,10 +137,17 @@ def webhook():
         print(f"🔴 [WEBHOOK ERROR] Failed processing update: {e}")
         return "Error", 500
 
-if __name__ == "__main__":
-    print("🔄 [INIT] Setting up clean Webhook...")
+
+# 🔥 الخدعة الكبرى: وضع التفعيل هنا مباشرة خارج الـ __main__ ليعمل مجبراً مع Gunicorn على Render
+print("🔄 [WEBHOOK SETUP] Initializing webhook deployment...")
+try:
     bot.remove_webhook()
-    # ربط مسار الـ Webhook الصريح بالسيرفر
     webhook_url = f"{RENDER_WEB_URL}/webhook"
     bot.set_webhook(url=webhook_url)
-    print(f"🚀 [INIT] Webhook live at: {webhook_url}")
+    print(f"🚀 [WEBHOOK SETUP] Success! Live at: {webhook_url}")
+except Exception as init_err:
+    print(f"🔴 [WEBHOOK SETUP] Failed to register webhook: {init_err}")
+
+if __name__ == "__main__":
+    # هذا لن يعمل على Render ولكنه مفيد للتجارب المحلية فقط
+    pass
