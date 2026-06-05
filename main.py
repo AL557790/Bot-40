@@ -51,7 +51,7 @@ def send_request_to_api(payload_data):
         if response.status_code == 200:
             try:
                 data = response.json()
-                base64_data = data.get("imageBase64")
+                base64_data = data.get("imageBase64") or data.get("image")
                 if base64_data:
                     return {"success": True, "data": base64_data}
                 else:
@@ -94,63 +94,48 @@ def handle_text(message):
     
     del payload, result
 
-# 2️⃣ تعديل صورة مرسلة (الحل النهائي الجذري لمشكلة صيغة الـ JPEG)
+# 2️⃣ تعديل صورة مرسلة (النسخة الشاملة لجميع احتمالات الحقول)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print(f"📸 [PHOTO] Received photo from user {message.chat.id}", flush=True)
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري تهيئة وتحويل الصورة إلى JPEG حقيقي ومطابق...")
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري تهيئة ومطابقة حقول معالجة الصور...")
 
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # فتح الصورة عبر Pillow
         raw_img = Image.open(io.BytesIO(downloaded_file))
-        
-        # 💡 خطوة حاسمة: إجبار الصورة على التخلص من أي طبقة شفافة قد تسبب رفض السيرفر الخارجي لها
         img = Image.new("RGB", raw_img.size, (255, 255, 255))
-        if raw_img.mode in ("RGBA", "P"):
-            img.paste(raw_img, mask=raw_img.convert("RGBA").split()[3])
-        else:
-            img.paste(raw_img)
+        img.paste(raw_img)
 
-        # تصغير الحجم لضمان الخفة الكاملة والسرعة
+        # جعل الصورة خفيفة جداً لسرعة الرفع وتفادي مشاكل الحقول
         max_size = 512
-        if img.width > max_size or img.height > max_size:
-            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
         output_buffer = io.BytesIO()
-        # حفظ الصورة بصيغة JPEG قياسية ومصمتة بالكامل
         img.save(output_buffer, format='JPEG', quality=80)
 
         encoded_image = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        caption = message.caption if message.caption else "enhance quality"
+        caption = message.caption if message.caption else "masterpiece, best quality, ultra detailed"
+        
+        full_base64_string = f"data:image/jpeg;base64,{encoded_image}"
 
-        # تحضير الـ Payload باستخدام صيغة الـ data:image/jpeg الاختيارية الأولى
+        # 💡 الخدعة الكبرى: تغذية السيرفر بجميع مسميات الحقول المحتملة في طلب واحد 
+        # لكي يجد الحقل الذي يبحث عنه مهما كان نظامه البرمجي الداخلي
         payload = {
             "prompt": caption,
-            "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
+            "imageBase64": full_base64_string,
+            "image": full_base64_string,
+            "init_image": full_base64_string,
             "format": "nanobanana2",
             "language": "en"
         }
 
-        try: bot.edit_message_text("⏳ جاري معالجة مخرجات الصورة ومطابقتها بالسيرفر الخارجي...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        try: bot.edit_message_text("⏳ جاري إرسال البيانات الموحدة وانتظار استجابة الذكاء الاصطناعي...", chat_id=message.chat.id, message_id=status_msg.message_id)
         except: pass
 
         result = send_request_to_api(payload)
         
-        # 💡 خدعة ذكية: إذا رفض السيرفر الصيغة السابقة، نعيد المحاولة فوراً بصيغة jpg البديلة مجبراً وبدون إزعاج المستخدم
-        if not result["success"] and "The uploaded image could not be processed" in str(result.get("text")):
-            print("🔄 [RETRY] API rejected 'image/jpeg'. Retrying with 'image/jpg' formulation...", flush=True)
-            payload["imageBase64"] = f"data:image/jpg;base64,{encoded_image}"
-            result = send_request_to_api(payload)
-            
-        # محاولة أخيرة بالـ Base64 الخام تماماً وبدون أي إضافات إذا استمر العناد
-        if not result["success"] and "400" in str(result.get("error")):
-            print("🔄 [RETRY 2] Trying raw encoded string without data prefix...", flush=True)
-            payload["imageBase64"] = encoded_image
-            result = send_request_to_api(payload)
-
         del downloaded_file, output_buffer, img, raw_img, encoded_image, payload
         
         if result["success"] and result["data"]:
@@ -162,14 +147,14 @@ def handle_photo(message):
 
             image_file = io.BytesIO(image_bytes)
             image_file.name = "result.jpg"
-            bot.send_photo(message.chat.id, image_file, caption="🎨 تم تعديل ومعالجة صورتك بنجاح وبأعلى جودة!")
+            bot.send_photo(message.chat.id, image_file, caption="🎨 تم تعديل ومعالجة صورتك بنجاح!")
             del base64_data, image_bytes, image_file
         else:
-            bot.edit_message_text(f"❌ فشل السيرفر الخارجي:\n`{result.get('error')}`\n`{result.get('text', '')[:120]}`", chat_id=message.chat.id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"❌ خطأ في معالجة الصورة:\n`{result.get('error')}`\nالسيرفر لم يتمكن من دمج الصورة مع هذا الوصف الحجمي.", message.chat.id, status_msg.message_id)
             
     except Exception as e:
         print(f"🔴 [PHOTO ERROR] {str(e)}", flush=True)
-        try: bot.edit_message_text(f"❌ خطأ داخلي أثناء المعالجة:\n`{str(e)[:100]}`", chat_id=message.chat.id, message_id=status_msg.message_id)
+        try: bot.edit_message_text(f"❌ خطأ داخلي أثناء المعالجة:\n`{str(e)[:100]}`", message.chat.id, status_msg.message_id)
         except: pass
 
 
