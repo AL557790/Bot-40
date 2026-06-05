@@ -16,7 +16,6 @@ app = Flask(__name__)
 API_URL = "https://imageprompt.online/api/generate"
 BASE_URL = "https://imageprompt.online/"
 
-# الهيدرز الأساسية لمحاكاة المتصفح بالكامل لتخطي حظر السيرفرات
 BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
     "Accept": "application/json, text/plain, */*",
@@ -34,13 +33,12 @@ BASE_HEADERS = {
 }
 
 def create_fresh_session():
-    """زيارة الصفحة الرئيسية أولاً لإنشاء وتثبيت الكوكيز التلقائية وتفادي الـ 403"""
     session = requests.Session()
     session.headers.update(BASE_HEADERS)
     try:
         session.get(BASE_URL, timeout=15)
     except Exception as e:
-        print(f"⚠️ تحذير أثناء إنشاء الجلسة التلقائية: {e}", flush=True)
+        print(f"⚠️ تحذير أثناء إنشاء الجلسة: {e}", flush=True)
     return session
 
 def send_request_to_api(payload_data):
@@ -61,7 +59,7 @@ def send_request_to_api(payload_data):
             except Exception:
                 return {"success": False, "error": "Response not JSON", "text": response.text[:100]}
         else:
-            return {"success": False, "error": f"HTTP {response.status_code}", "text": response.text[:100]}
+            return {"success": False, "error": f"HTTP {response.status_code}", "text": response.text[:150]}
     except Exception as e:
         return {"success": False, "error": "Network Timeout", "text": str(e)[:100]}
 
@@ -69,7 +67,7 @@ def send_request_to_api(payload_data):
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     print(f"📩 [TEXT] User {message.chat.id} sent: {message.text}", flush=True)
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري توليد الصورة عبر جلسة جديدة...")
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري توليد الصورة...")
 
     payload = {
         "prompt": message.text,
@@ -96,35 +94,39 @@ def handle_text(message):
     
     del payload, result
 
-# 2️⃣ تعديل صورة مرسلة (النسخة المصححة والمؤمنة بالكامل)
+# 2️⃣ تعديل صورة مرسلة (الحل النهائي الجذري لمشكلة صيغة الـ JPEG)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print(f"📸 [PHOTO] Received photo from user {message.chat.id}", flush=True)
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري تهيئة ومعالجة أبعاد الصورة واختراق الحماية...")
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري تهيئة وتحويل الصورة إلى JPEG حقيقي ومطابق...")
 
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        img = Image.open(io.BytesIO(downloaded_file))
+        # فتح الصورة عبر Pillow
+        raw_img = Image.open(io.BytesIO(downloaded_file))
         
-        # تصغير حجم الصورة قليلاً لعدم تخطي الرام المسموح في سيرفر Render المجاني
-        max_size = 600
+        # 💡 خطوة حاسمة: إجبار الصورة على التخلص من أي طبقة شفافة قد تسبب رفض السيرفر الخارجي لها
+        img = Image.new("RGB", raw_img.size, (255, 255, 255))
+        if raw_img.mode in ("RGBA", "P"):
+            img.paste(raw_img, mask=raw_img.convert("RGBA").split()[3])
+        else:
+            img.paste(raw_img)
+
+        # تصغير الحجم لضمان الخفة الكاملة والسرعة
+        max_size = 512
         if img.width > max_size or img.height > max_size:
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            
-        if img.mode != 'RGB': 
-            img = img.convert('RGB')
 
         output_buffer = io.BytesIO()
+        # حفظ الصورة بصيغة JPEG قياسية ومصمتة بالكامل
         img.save(output_buffer, format='JPEG', quality=80)
 
         encoded_image = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        
-        # إذا لم يكتب كابشن، نضع هذا الوصف الافتراضي المتوافق مع موديل التعديل
-        caption = message.caption if message.caption else "enhance quality, detailed, realistic"
+        caption = message.caption if message.caption else "enhance quality"
 
-        # 💡 الإصلاح الجوهري: إضافة الداتا بريفيكس ليفهمها السيرفر فوراً ولا يعطي 400
+        # تحضير الـ Payload باستخدام صيغة الـ data:image/jpeg الاختيارية الأولى
         payload = {
             "prompt": caption,
             "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
@@ -132,12 +134,24 @@ def handle_photo(message):
             "language": "en"
         }
 
-        try: bot.edit_message_text("⏳ جاري إنشاء الجلسة ورفع بيانات الصورة المشفرة...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        try: bot.edit_message_text("⏳ جاري معالجة مخرجات الصورة ومطابقتها بالسيرفر الخارجي...", chat_id=message.chat.id, message_id=status_msg.message_id)
         except: pass
 
         result = send_request_to_api(payload)
         
-        del downloaded_file, output_buffer, img, encoded_image, payload
+        # 💡 خدعة ذكية: إذا رفض السيرفر الصيغة السابقة، نعيد المحاولة فوراً بصيغة jpg البديلة مجبراً وبدون إزعاج المستخدم
+        if not result["success"] and "The uploaded image could not be processed" in str(result.get("text")):
+            print("🔄 [RETRY] API rejected 'image/jpeg'. Retrying with 'image/jpg' formulation...", flush=True)
+            payload["imageBase64"] = f"data:image/jpg;base64,{encoded_image}"
+            result = send_request_to_api(payload)
+            
+        # محاولة أخيرة بالـ Base64 الخام تماماً وبدون أي إضافات إذا استمر العناد
+        if not result["success"] and "400" in str(result.get("error")):
+            print("🔄 [RETRY 2] Trying raw encoded string without data prefix...", flush=True)
+            payload["imageBase64"] = encoded_image
+            result = send_request_to_api(payload)
+
+        del downloaded_file, output_buffer, img, raw_img, encoded_image, payload
         
         if result["success"] and result["data"]:
             base64_data = result["data"].split(",")[1] if "," in result["data"] else result["data"]
@@ -148,10 +162,10 @@ def handle_photo(message):
 
             image_file = io.BytesIO(image_bytes)
             image_file.name = "result.jpg"
-            bot.send_photo(message.chat.id, image_file, caption="🎨 تم تعديل ومعالجة صورتك بنجاح!")
+            bot.send_photo(message.chat.id, image_file, caption="🎨 تم تعديل ومعالجة صورتك بنجاح وبأعلى جودة!")
             del base64_data, image_bytes, image_file
         else:
-            bot.edit_message_text(f"❌ فشل السيرفر الخارجي:\n`{result.get('error')}`\n`{result.get('text', '')[:100]}`", chat_id=message.chat.id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"❌ فشل السيرفر الخارجي:\n`{result.get('error')}`\n`{result.get('text', '')[:120]}`", chat_id=message.chat.id, message_id=status_msg.message_id)
             
     except Exception as e:
         print(f"🔴 [PHOTO ERROR] {str(e)}", flush=True)
@@ -159,17 +173,15 @@ def handle_photo(message):
         except: pass
 
 
-# مسار الويب الأساسي الذي يضمن استمرار تشغيل الخدمة على موقع Render دون إغلاق
 @app.route("/")
 def home():
     return "Hybrid Polling Server is Active!"
 
 
-# دالة لتشغيل البوت بنظام Polling مستمر داخل خيط معالجة (Thread) مستقل ومتوازي
 def run_bot_polling():
     while True:
         try:
-            print("🔄 [POLLING] Resetting updates and launching infinity loop...", flush=True)
+            print("🔄 [POLLING] Launching infinity loop...", flush=True)
             bot.remove_webhook()
             bot.infinity_polling(timeout=25, long_polling_timeout=25)
         except Exception as e:
@@ -177,7 +189,6 @@ def run_bot_polling():
             time.sleep(5)
 
 
-# تفعيل تشغيل البوت في الخلفية بالتوازي مع سيرفر الويب
 polling_thread = threading.Thread(target=run_bot_polling)
 polling_thread.daemon = True
 polling_thread.start()
