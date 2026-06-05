@@ -1,5 +1,5 @@
-pyTelegramBotAPI==4.22.1
-Flask==3.0.3
+pyTelegramBotAPI==4.26.0
 requests==2.32.3
+Pillow==10.4.0
+Flask==3.0.3
 gunicorn==23.0.0
-pillow==11.0.0
