@@ -7,7 +7,7 @@ from flask import Flask
 import threading
 import time
 
-# 1️⃣ توكن البوت
+# 1️⃣ توكن البوت الخاص بك
 TELEGRAM_BOT_TOKEN = "8820755267:AAHMUktr3XDN_0RjFDM79NExy7ORssx-MdI"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
@@ -77,38 +77,58 @@ def handle_text(message):
     
     del payload, result
 
-# 2️⃣ تعديل صورة مرسلة
+# 2️⃣ تعديل صورة مرسلة (نسخة محسنة ومخففة لمنع خطأ HTTP 400)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print(f"📸 [POLLING - PHOTO] Received photo from user {message.chat.id}", flush=True)
-    status_msg = bot.send_message(message.chat.id, "⏳ جاري المعالجة...")
+    status_msg = bot.send_message(message.chat.id, "⏳ جاري تقليص حجم الصورة وتجهيزها...")
 
     try:
+        # جلب بيانات الملف وتحميله
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
+        # فتح الصورة والتحكم بأبعادها لتناسب الرام المحدود في Render
         img = Image.open(io.BytesIO(downloaded_file))
-        img.thumbnail((800, 800), Image.Resampling.LANCZOS)
-        if img.mode != 'RGB': img = img.convert('RGB')
+        
+        # تقليص الأبعاد إلى 512 لضمان خفة الحجم وتفادي الـ Bad Request
+        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        if img.mode != 'RGB': 
+            img = img.convert('RGB')
 
         output_buffer = io.BytesIO()
-        img.save(output_buffer, format='JPEG', quality=80)
+        # ضغط الصورة بجودة متوازنة لتقليص حجم الـ Base64
+        img.save(output_buffer, format='JPEG', quality=75)
 
+        # تحويل الصورة إلى Base64 خام (بدون داتا بريفيكس)
         encoded_image = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
         caption = message.caption if message.caption else "enhance image"
 
+        # تحضير البيانات بترميز الـ Base64 الخام أولاً
         payload = {
             "prompt": caption,
-            "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
+            "imageBase64": encoded_image,
             "format": "nanobanana2",
             "language": "en"
         }
 
-        try: bot.edit_message_text("⏳ جاري رفع بيانات الصورة ومعالجتها بالسيرفر...", message.chat.id, status_msg.message_id)
+        try: bot.edit_message_text("⏳ جاري رفع بيانات الصورة ومعالجتها بالسيرفر الخارجي...", message.chat.id, status_msg.message_id)
         except: pass
 
+        # إرسال الطلب الأول
         result = send_request_to_api(payload)
-        del downloaded_file, encoded_image, output_buffer
+        
+        # تنظيف فوري للذاكرة الكبيرة لمنع استهلاك رام Render
+        del downloaded_file, output_buffer, img
+        
+        # خدعة ذكية: إذا أرجع السيرفر خطأ 400، نجرب الصيغة البديلة (مع إضافة الميتا داتا) تلقائياً
+        if not result["success"] and "400" in str(result.get("error")):
+            print("🔄 [RETRY] API returned 400. Retrying with Data URI prefix...", flush=True)
+            payload["imageBase64"] = f"data:image/jpeg;base64,{encoded_image}"
+            result = send_request_to_api(payload)
+
+        # تنظيف نص الـ Base64 والـ payload بعد الانتهاء
+        del encoded_image, payload
         
         if result["success"]:
             base64_data = result["data"].split(",")[1] if "," in result["data"] else result["data"]
@@ -119,33 +139,36 @@ def handle_photo(message):
 
             image_file = io.BytesIO(image_bytes)
             image_file.name = "result.jpg"
-            bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل بنجاح")
+            bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل والمعالجة بنجاح!")
             del base64_data, image_bytes, image_file
         else:
-            bot.edit_message_text(f"❌ فشل السيرفر الخارجي:\n`{result.get('error')}`", message.chat.id, status_msg.message_id)
+            bot.edit_message_text(f"❌ فشل السيرفر الخارجي بالرد:\n`{result.get('error')}`\nتأكد من كتابة وصف مناسب مع الصورة.", message.chat.id, status_msg.message_id)
             
     except Exception as e:
         print(f"🔴 [PHOTO ERROR] {str(e)}", flush=True)
-        bot.edit_message_text(f"❌ خطأ داخلي:\n`{str(e)[:100]}`", message.chat.id, status_msg.message_id)
+        try: bot.edit_message_text(f"❌ خطأ داخلي أثناء المعالجة:\n`{str(e)[:100]}`", message.chat.id, status_msg.message_id)
+        except: pass
 
 
-# مسار الويب لـ Render لإقناعه أن السيرفر حي
+# مسار الويب الأساسي الذي يفحصه موقع Render لإبقاء الخدمة حية
 @app.route("/")
 def home():
     return "Bot is running via Hybrid Polling mode!"
 
-# دالة لتشغيل البوت بنظام Polling مستمر داخل Thread مستقل
+
+# دالة لتشغيل البوت بنظام Polling مستمر داخل خيط معالجة (Thread) مستقل
 def run_bot_polling():
     while True:
         try:
-            print("🔄 [POLLING] Removing webhooks and starting infinity polling...", flush=True)
+            print("🔄 [POLLING] Clearing webhooks and starting infinity polling...", flush=True)
             bot.remove_webhook()
             bot.infinity_polling(timeout=20, long_polling_timeout=20)
         except Exception as e:
-            print(f"⚠️ [POLLING CRASH] Restarting polling in 5 seconds due to error: {e}", flush=True)
+            print(f"⚠️ [POLLING CRASH] Restarting polling loop in 5 seconds: {e}", flush=True)
             time.sleep(5)
 
-# تشغيل الخيط المستقل فوراً عند بدء التطبيق
+
+# تشغيل خيط المعالجة المستقل فوراً عند بدء التطبيق ليعمل بالتوازي مع Flask
 polling_thread = threading.Thread(target=run_bot_polling)
 polling_thread.daemon = True
 polling_thread.start()
