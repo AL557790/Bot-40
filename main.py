@@ -15,33 +15,31 @@ RENDER_WEB_URL = "https://bot-40-sm1k.onrender.com"
 app = Flask(__name__)
 
 API_URL = "https://imageprompt.online/api/generate"
-BASE_URL = "https://imageprompt.online/"
 
 BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Content-Type": "application/json",
     "Origin": "https://imageprompt.online",
     "Referer": "https://imageprompt.online/",
     "Connection": "keep-alive"
 }
 
 def create_fresh_session():
+    """إنشاء جلسة مباشرة وسريعة لتفادي تجمد خوادم Render"""
     session = requests.Session()
     session.headers.update(BASE_HEADERS)
-    try:
-        session.get(BASE_URL, timeout=15)
-    except Exception as e:
-        print(f"⚠️ [API SESSION WARN] Cookies failed: {e}")
+    # تم إزالة طلب get المبدئي لمنع تعليق أو تجميد الخادم
     return session
 
 def send_request_to_api(payload_data):
     try:
         session = create_fresh_session()
         print("📡 [LOG] Sending payload to external API...")
-        response = session.post(API_URL, json=payload_data, timeout=50)
+        response = session.post(API_URL, json=payload_data, timeout=45)
         print(f"📊 [LOG] External API responded with status code: {response.status_code}")
-        
+
         if response.status_code == 200:
             data = response.json()
             base64_data = data.get("imageBase64")
@@ -57,66 +55,86 @@ def send_request_to_api(payload_data):
 def handle_text(message):
     print(f"📩 [NEW TEXT] User {message.chat.id} sent: {message.text}")
     status_msg = bot.send_message(message.chat.id, "⏳ جاري التوليد...")
-    
+
     payload = {
         "prompt": message.text,
         "imageBase64": "", 
         "format": "nanobanana2",
         "language": "en"
     }
-    
+
     result = send_request_to_api(payload)
     if result["success"]:
         base64_data = result["data"].split(",")[1] if "," in result["data"] else result["data"]
         image_bytes = base64.b64decode(base64_data)
+        
         try: bot.delete_message(message.chat.id, status_msg.message_id)
         except: pass
-        
+
         image_file = io.BytesIO(image_bytes)
         image_file.name = "result.jpg"
         bot.send_photo(message.chat.id, image_file, caption="🎨 تم التوليد بنجاح")
+        
+        # تنظيف الذاكرة
+        del base64_data, image_bytes, image_file
     else:
         bot.edit_message_text(f"❌ خطأ:\n`{result.get('error')}`", message.chat.id, status_msg.message_id)
+    
+    del payload, result
 
 # 2️⃣ تعديل صورة مرسلة
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print(f"📸 [NEW PHOTO] Received photo from user {message.chat.id}")
     status_msg = bot.send_message(message.chat.id, "⏳ جاري المعالجة...")
-    
+
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        
+
         img = Image.open(io.BytesIO(downloaded_file))
         img.thumbnail((800, 800), Image.Resampling.LANCZOS)
         if img.mode != 'RGB': img = img.convert('RGB')
-            
+
         output_buffer = io.BytesIO()
-        img.save(output_buffer, format='JPEG', quality=85)
-        
+        img.save(output_buffer, format='JPEG', quality=80) # تقليل طفيف جداً للجودة لتسريع الرفع
+
         encoded_image = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
         caption = message.caption if message.caption else "enhance image"
-        
+
         payload = {
             "prompt": caption,
             "imageBase64": f"data:image/jpeg;base64,{encoded_image}",
             "format": "nanobanana2",
             "language": "en"
         }
-        
+
+        # تحديث نص الحالة قبل الإرسال الطويل للـ API
+        try: bot.edit_message_text("⏳ جاري رفع بيانات الصورة ومعالجتها بالسيرفر...", message.chat.id, status_msg.message_id)
+        except: pass
+
         result = send_request_to_api(payload)
+        
+        # تنظيف فوري لبيانات الصورة المرفوعة لتوفير الذاكرة
+        del downloaded_file, encoded_image, output_buffer
+        
         if result["success"]:
             base64_data = result["data"].split(",")[1] if "," in result["data"] else result["data"]
+            image_bytes = base64.b64decode(base64_data)
+            
             try: bot.delete_message(message.chat.id, status_msg.message_id)
             except: pass
-            
-            image_file = io.BytesIO(base64.b64decode(base64_data))
+
+            image_file = io.BytesIO(image_bytes)
             image_file.name = "result.jpg"
             bot.send_photo(message.chat.id, image_file, caption="🎨 تم التعديل بنجاح")
+            
+            del base64_data, image_bytes, image_file
         else:
-            bot.edit_message_text(f"❌ فشل:\n`{result.get('error')}`", message.chat.id, status_msg.message_id)
+            bot.edit_message_text(f"❌ فشل السيرفر الخارجي:\n`{result.get('error')}`\n{result.get('text', '')[:100]}", message.chat.id, status_msg.message_id)
+            
     except Exception as e:
+        print(f"🔴 [PHOTO ERROR] {str(e)}")
         bot.edit_message_text(f"❌ خطأ داخلي:\n`{str(e)[:100]}`", message.chat.id, status_msg.message_id)
 
 
@@ -138,7 +156,7 @@ def webhook():
         return "Error", 500
 
 
-# 🔥 الخدعة الكبرى: وضع التفعيل هنا مباشرة خارج الـ __main__ ليعمل مجبراً مع Gunicorn على Render
+# 🔥 التفعيل الإجباري للـ Webhook عند بدء Gunicorn مباشرة
 print("🔄 [WEBHOOK SETUP] Initializing webhook deployment...")
 try:
     bot.remove_webhook()
@@ -149,5 +167,4 @@ except Exception as init_err:
     print(f"🔴 [WEBHOOK SETUP] Failed to register webhook: {init_err}")
 
 if __name__ == "__main__":
-    # هذا لن يعمل على Render ولكنه مفيد للتجارب المحلية فقط
     pass
